@@ -94,7 +94,7 @@ class OverlayService : Service() {
         val messageText = TextView(this).apply {
             text = "지금 포기하면 캐릭터가 아파요!"
             textSize = 24f
-            textColor = Color.parseColor("#333333")
+            setTextColor(Color.parseColor("#333333"))
             gravity = Gravity.CENTER
             setTypeface(null, Typeface.BOLD)
             setPadding(0, 0, 0, 40)
@@ -105,7 +105,7 @@ class OverlayService : Service() {
         val subMessageText = TextView(this).apply {
             text = "집중 시간을 지켜주세요"
             textSize = 18f
-            textColor = Color.parseColor("#666666")
+            setTextColor(Color.parseColor("#666666"))
             gravity = Gravity.CENTER
             setPadding(0, 0, 0, 50)
         }
