@@ -7,11 +7,22 @@ import {
   ScrollView,
   Alert,
 } from 'react-native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { RootStackParamList } from '../navigation/types';
 import { useCharacterStore } from '../store/characterStore';
 import { useFocusTimer } from '../hooks/useFocusTimer';
 import CharacterDisplay from '../components/CharacterDisplay';
 
-const CharacterScreen: React.FC = () => {
+type CharacterScreenNavigationProp = NativeStackNavigationProp<
+  RootStackParamList,
+  'Character'
+>;
+
+interface CharacterScreenProps {
+  navigation: CharacterScreenNavigationProp;
+}
+
+const CharacterScreen: React.FC<CharacterScreenProps> = ({ navigation }) => {
   const { charLevel, currentXP, status, totalFocusTime, addXP, reset } =
     useCharacterStore();
   const [isFocusing, setIsFocusing] = useState(false);
@@ -117,6 +128,15 @@ const CharacterScreen: React.FC = () => {
               {Math.floor(totalFocusTime / 60)}분
             </Text>
           </View>
+        </View>
+
+        <View style={styles.navigationSection}>
+          <TouchableOpacity
+            style={[styles.button, styles.navButton]}
+            onPress={() => navigation.navigate('FocusTimer')}
+          >
+            <Text style={styles.buttonText}>집중 타이머로 이동</Text>
+          </TouchableOpacity>
         </View>
       </View>
     </ScrollView>
@@ -234,6 +254,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#333',
+  },
+  navigationSection: {
+    marginTop: 16,
+  },
+  navButton: {
+    backgroundColor: '#2196f3',
   },
 });
 

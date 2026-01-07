@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { useCharacterStore, CharacterStatus } from '../store/characterStore';
+import AnimatedCharacter from './AnimatedCharacter';
 
 interface CharacterDisplayProps {
   showDetails?: boolean;
@@ -59,12 +60,7 @@ const CharacterDisplay: React.FC<CharacterDisplayProps> = ({
   return (
     <View style={styles.container}>
       <View style={styles.characterCard}>
-        <Text style={styles.characterEmoji}>
-          {status === 'EGG' && '🥚'}
-          {status === 'BABY' && '👶'}
-          {status === 'CRYING' && '😢'}
-          {status === 'SLEEPING' && '😴'}
-        </Text>
+        <AnimatedCharacter status={status} size={120} />
         <Text style={styles.statusText}>{statusText[status]}</Text>
         <Text style={styles.levelText}>레벨 {charLevel}</Text>
       </View>
@@ -116,10 +112,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
-  },
-  characterEmoji: {
-    fontSize: 64,
-    marginBottom: 8,
   },
   statusText: {
     fontSize: 20,

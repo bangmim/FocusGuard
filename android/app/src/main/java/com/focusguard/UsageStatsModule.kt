@@ -16,6 +16,9 @@ class UsageStatsModule(reactContext: ReactApplicationContext) : ReactContextBase
     private val usageStatsManager: UsageStatsManager? by lazy {
         reactContext.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
     }
+    
+    @Volatile
+    private var monitoringThread: Thread? = null
 
     override fun getName(): String {
         return "UsageStatsModule"
@@ -109,15 +112,18 @@ class UsageStatsModule(reactContext: ReactApplicationContext) : ReactContextBase
     @ReactMethod
     fun startMonitoring(intervalMs: Int) {
         try {
+            // 기존 모니터링 스레드가 있으면 중지
+            stopMonitoring()
+            
             if (!isUsageStatsPermissionGrantedSync()) {
                 sendEvent("ERROR", createErrorMap("Usage Stats 권한이 필요합니다"))
                 return
             }
 
             // 모니터링 로직은 별도 스레드에서 실행
-            Thread {
+            val thread = Thread {
                 var lastPackageName: String? = null
-                while (true) {
+                while (!Thread.currentThread().isInterrupted) {
                     try {
                         val currentTime = System.currentTimeMillis()
                         val stats = usageStatsManager?.queryUsageStats(
@@ -146,15 +152,33 @@ class UsageStatsModule(reactContext: ReactApplicationContext) : ReactContextBase
 
                         Thread.sleep(intervalMs.toLong())
                     } catch (e: InterruptedException) {
+                        Thread.currentThread().interrupt()
                         break
                     } catch (e: Exception) {
                         sendEvent("ERROR", createErrorMap("모니터링 중 오류: ${e.message}"))
                         break
                     }
                 }
-            }.start()
+                monitoringThread = null
+            }
+            
+            monitoringThread = thread
+            thread.start()
         } catch (e: Exception) {
             sendEvent("ERROR", createErrorMap("모니터링 시작 실패: ${e.message}"))
+        }
+    }
+
+    /**
+     * 앱 사용량 모니터링 중지
+     */
+    @ReactMethod
+    fun stopMonitoring() {
+        monitoringThread?.let { thread ->
+            if (thread.isAlive) {
+                thread.interrupt()
+            }
+            monitoringThread = null
         }
     }
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,15 +7,44 @@ import {
   ScrollView,
   Alert,
 } from 'react-native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { RootStackParamList } from '../navigation/types';
 import { usageStatsModule } from '../native/UsageStatsModule';
 import { overlayModule } from '../native/OverlayModule';
 
-const PermissionScreen: React.FC = () => {
+type PermissionScreenNavigationProp = NativeStackNavigationProp<
+  RootStackParamList,
+  'Permission'
+>;
+
+interface PermissionScreenProps {
+  navigation: PermissionScreenNavigationProp;
+}
+
+const PermissionScreen: React.FC<PermissionScreenProps> = ({ navigation }) => {
   const [usageStatsGranted, setUsageStatsGranted] = useState(false);
   const [overlayGranted, setOverlayGranted] = useState(false);
+  const usageStatsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
+    null,
+  );
+  const overlayIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
+    null,
+  );
 
   useEffect(() => {
     checkPermissions();
+
+    // 컴포넌트 언마운트 시 interval 정리
+    return () => {
+      if (usageStatsIntervalRef.current) {
+        clearInterval(usageStatsIntervalRef.current);
+        usageStatsIntervalRef.current = null;
+      }
+      if (overlayIntervalRef.current) {
+        clearInterval(overlayIntervalRef.current);
+        overlayIntervalRef.current = null;
+      }
+    };
   }, []);
 
   const checkPermissions = async () => {
@@ -30,6 +59,12 @@ const PermissionScreen: React.FC = () => {
   };
 
   const handleRequestUsageStats = () => {
+    // 기존 interval 정리
+    if (usageStatsIntervalRef.current) {
+      clearInterval(usageStatsIntervalRef.current);
+      usageStatsIntervalRef.current = null;
+    }
+
     usageStatsModule.requestUsageStatsPermission();
     Alert.alert(
       '권한 설정 안내',
@@ -38,13 +73,20 @@ const PermissionScreen: React.FC = () => {
         {
           text: '확인',
           onPress: () => {
-            // 사용자가 설정에서 돌아올 때 권한 재확인
-            const interval = setInterval(async () => {
+            // 사용자가 설정에서 돌아올 때 권한 재확인 (최대 60초)
+            let checkCount = 0;
+            const maxChecks = 60;
+
+            usageStatsIntervalRef.current = setInterval(async () => {
+              checkCount++;
               const granted =
                 await usageStatsModule.isUsageStatsPermissionGranted();
-              if (granted) {
-                setUsageStatsGranted(true);
-                clearInterval(interval);
+              if (granted || checkCount >= maxChecks) {
+                setUsageStatsGranted(granted);
+                if (usageStatsIntervalRef.current) {
+                  clearInterval(usageStatsIntervalRef.current);
+                  usageStatsIntervalRef.current = null;
+                }
               }
             }, 1000);
           },
@@ -54,6 +96,12 @@ const PermissionScreen: React.FC = () => {
   };
 
   const handleRequestOverlay = () => {
+    // 기존 interval 정리
+    if (overlayIntervalRef.current) {
+      clearInterval(overlayIntervalRef.current);
+      overlayIntervalRef.current = null;
+    }
+
     overlayModule.requestOverlayPermission();
     Alert.alert(
       '권한 설정 안내',
@@ -62,12 +110,19 @@ const PermissionScreen: React.FC = () => {
         {
           text: '확인',
           onPress: () => {
-            // 사용자가 설정에서 돌아올 때 권한 재확인
-            const interval = setInterval(async () => {
+            // 사용자가 설정에서 돌아올 때 권한 재확인 (최대 60초)
+            let checkCount = 0;
+            const maxChecks = 60;
+
+            overlayIntervalRef.current = setInterval(async () => {
+              checkCount++;
               const granted = await overlayModule.isOverlayPermissionGranted();
-              if (granted) {
-                setOverlayGranted(true);
-                clearInterval(interval);
+              if (granted || checkCount >= maxChecks) {
+                setOverlayGranted(granted);
+                if (overlayIntervalRef.current) {
+                  clearInterval(overlayIntervalRef.current);
+                  overlayIntervalRef.current = null;
+                }
               }
             }, 1000);
           },
@@ -172,15 +227,21 @@ const PermissionScreen: React.FC = () => {
 
         {usageStatsGranted && overlayGranted && (
           <View style={styles.testSection}>
-            <Text style={styles.testTitle}>권한 테스트</Text>
+            <Text style={styles.testTitle}>권한 설정 완료</Text>
             <Text style={styles.testDescription}>
-              모든 권한이 허용되었습니다. 오버레이 기능을 테스트해보세요.
+              모든 권한이 허용되었습니다. 이제 집중 모드를 시작할 수 있습니다.
             </Text>
             <TouchableOpacity
               style={[styles.button, styles.testButton]}
               onPress={handleTestOverlay}
             >
               <Text style={styles.buttonText}>오버레이 테스트</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.button, styles.nextButton]}
+              onPress={() => navigation.navigate('FocusTimer')}
+            >
+              <Text style={styles.buttonText}>집중 타이머로 이동</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -309,6 +370,10 @@ const styles = StyleSheet.create({
   refreshButton: {
     backgroundColor: '#ff9800',
     marginTop: 8,
+  },
+  nextButton: {
+    backgroundColor: '#4caf50',
+    marginTop: 12,
   },
 });
 

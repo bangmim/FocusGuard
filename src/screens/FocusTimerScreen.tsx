@@ -1,29 +1,41 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
-  Image,
   Alert,
   ScrollView,
 } from 'react-native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { RootStackParamList } from '../navigation/types';
 import { useCharacterStore } from '../store/characterStore';
 import { useBlockedAppsStore } from '../store/blockedAppsStore';
 import { useFocusTimer } from '../hooks/useFocusTimer';
-import { usageStatsModule, usageStatsEmitter } from '../native/UsageStatsModule';
+import {
+  usageStatsModule,
+  usageStatsEmitter,
+} from '../native/UsageStatsModule';
 import { overlayModule } from '../native/OverlayModule';
 import CharacterDisplay from '../components/CharacterDisplay';
+import AnimatedCharacter from '../components/AnimatedCharacter';
 
-const FocusTimerScreen: React.FC = () => {
+type FocusTimerScreenNavigationProp = NativeStackNavigationProp<
+  RootStackParamList,
+  'FocusTimer'
+>;
+
+interface FocusTimerScreenProps {
+  navigation: FocusTimerScreenNavigationProp;
+}
+
+const FocusTimerScreen: React.FC<FocusTimerScreenProps> = ({ navigation }) => {
   const { startFocus, stopFocus } = useCharacterStore();
   const { isMonitoring, setIsMonitoring, blockedPackages } =
     useBlockedAppsStore();
   const [isFocusing, setIsFocusing] = useState(false);
   const [focusTime, setFocusTime] = useState(0); // 초 단위
-  const [timerInterval, setTimerInterval] = useState<NodeJS.Timeout | null>(
-    null,
-  );
+  const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // 집중 타이머 활성화
   useFocusTimer(isFocusing);
@@ -59,20 +71,21 @@ const FocusTimerScreen: React.FC = () => {
       const interval = setInterval(() => {
         setFocusTime(prev => prev + 1);
       }, 1000);
-      setTimerInterval(interval);
+      timerIntervalRef.current = interval;
+
+      return () => {
+        if (timerIntervalRef.current) {
+          clearInterval(timerIntervalRef.current);
+          timerIntervalRef.current = null;
+        }
+      };
     } else {
-      if (timerInterval) {
-        clearInterval(timerInterval);
-        setTimerInterval(null);
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
       }
       setFocusTime(0);
     }
-
-    return () => {
-      if (timerInterval) {
-        clearInterval(timerInterval);
-      }
-    };
   }, [isFocusing]);
 
   const handleStartFocus = async () => {
@@ -82,32 +95,24 @@ const FocusTimerScreen: React.FC = () => {
     const overlayGranted = await overlayModule.isOverlayPermissionGranted();
 
     if (!usageStatsGranted) {
-      Alert.alert(
-        '권한 필요',
-        '사용 통계 접근 권한이 필요합니다.',
-        [
-          { text: '취소', style: 'cancel' },
-          {
-            text: '설정으로 이동',
-            onPress: () => usageStatsModule.requestUsageStatsPermission(),
-          },
-        ],
-      );
+      Alert.alert('권한 필요', '사용 통계 접근 권한이 필요합니다.', [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '설정으로 이동',
+          onPress: () => usageStatsModule.requestUsageStatsPermission(),
+        },
+      ]);
       return;
     }
 
     if (!overlayGranted) {
-      Alert.alert(
-        '권한 필요',
-        '다른 앱 위에 그리기 권한이 필요합니다.',
-        [
-          { text: '취소', style: 'cancel' },
-          {
-            text: '설정으로 이동',
-            onPress: () => overlayModule.requestOverlayPermission(),
-          },
-        ],
-      );
+      Alert.alert('권한 필요', '다른 앱 위에 그리기 권한이 필요합니다.', [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '설정으로 이동',
+          onPress: () => overlayModule.requestOverlayPermission(),
+        },
+      ]);
       return;
     }
 
@@ -119,7 +124,10 @@ const FocusTimerScreen: React.FC = () => {
     // 앱 모니터링 시작 (1초마다 체크)
     usageStatsModule.startMonitoring(1000);
 
-    Alert.alert('집중 모드 시작', '금지된 앱을 실행하면 차단 화면이 표시됩니다.');
+    Alert.alert(
+      '집중 모드 시작',
+      '금지된 앱을 실행하면 차단 화면이 표시됩니다.',
+    );
   };
 
   const handleStopFocus = () => {
@@ -132,8 +140,8 @@ const FocusTimerScreen: React.FC = () => {
           setIsMonitoring(false);
           stopFocus();
           overlayModule.stopOverlayService();
+          usageStatsModule.stopMonitoring(); // 모니터링 스레드 명시적으로 중지
           setFocusTime(0);
-          // 모니터링은 자동으로 중지됨 (스레드가 종료되면)
         },
       },
     ]);
@@ -164,15 +172,10 @@ const FocusTimerScreen: React.FC = () => {
         {/* 캐릭터 표시 영역 */}
         <View style={styles.characterSection}>
           <View style={styles.characterContainer}>
-            {/* Placeholder 이미지 - 나중에 실제 이미지로 교체 */}
-            <View style={styles.characterImagePlaceholder}>
-              <Text style={styles.characterEmoji}>
-                {useCharacterStore.getState().status === 'EGG' && '🥚'}
-                {useCharacterStore.getState().status === 'BABY' && '👶'}
-                {useCharacterStore.getState().status === 'CRYING' && '😢'}
-                {useCharacterStore.getState().status === 'SLEEPING' && '😴'}
-              </Text>
-            </View>
+            <AnimatedCharacter
+              status={useCharacterStore.getState().status}
+              size={200}
+            />
           </View>
         </View>
 
@@ -204,6 +207,16 @@ const FocusTimerScreen: React.FC = () => {
         {/* 캐릭터 정보 */}
         <View style={styles.infoSection}>
           <CharacterDisplay showDetails={true} />
+        </View>
+
+        {/* 네비게이션 버튼 */}
+        <View style={styles.navigationSection}>
+          <TouchableOpacity
+            style={[styles.button, styles.navButton]}
+            onPress={() => navigation.navigate('Character')}
+          >
+            <Text style={styles.buttonText}>캐릭터 육성 보기</Text>
+          </TouchableOpacity>
         </View>
 
         {/* 금지 앱 목록 (디버그용) */}
@@ -251,16 +264,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 8,
     elevation: 5,
-  },
-  characterImagePlaceholder: {
-    width: '100%',
-    height: '100%',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderRadius: 100,
-  },
-  characterEmoji: {
-    fontSize: 100,
   },
   timerSection: {
     alignItems: 'center',
@@ -325,7 +328,12 @@ const styles = StyleSheet.create({
     color: '#666',
     marginBottom: 4,
   },
+  navigationSection: {
+    marginBottom: 20,
+  },
+  navButton: {
+    backgroundColor: '#2196f3',
+  },
 });
 
 export default FocusTimerScreen;
-

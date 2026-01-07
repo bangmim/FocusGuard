@@ -7,6 +7,7 @@ export interface UsageStatsModuleType {
   requestUsageStatsPermission(): void;
   getCurrentAppPackage(): Promise<string | null>;
   startMonitoring(intervalMs: number): void;
+  stopMonitoring(): void;
 }
 
 export const usageStatsModule = UsageStatsModule as UsageStatsModuleType;
