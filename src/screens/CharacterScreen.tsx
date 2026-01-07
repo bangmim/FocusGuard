@@ -8,6 +8,7 @@ import {
   Alert,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../navigation/types';
 import { useCharacterStore } from '../store/characterStore';
 import { useFocusTimer } from '../hooks/useFocusTimer';
@@ -23,6 +24,7 @@ interface CharacterScreenProps {
 }
 
 const CharacterScreen: React.FC<CharacterScreenProps> = ({ navigation }) => {
+  const insets = useSafeAreaInsets();
   const { charLevel, currentXP, status, totalFocusTime, addXP, reset } =
     useCharacterStore();
   const [isFocusing, setIsFocusing] = useState(false);
@@ -64,7 +66,10 @@ const CharacterScreen: React.FC<CharacterScreenProps> = ({ navigation }) => {
   };
 
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={{ paddingBottom: insets.bottom }}
+    >
       <View style={styles.header}>
         <Text style={styles.title}>캐릭터 육성</Text>
         <Text style={styles.subtitle}>집중하면 캐릭터가 성장합니다!</Text>

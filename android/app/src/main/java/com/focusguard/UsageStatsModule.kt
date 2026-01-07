@@ -19,6 +19,15 @@ class UsageStatsModule(reactContext: ReactApplicationContext) : ReactContextBase
     
     @Volatile
     private var monitoringThread: Thread? = null
+    
+    private val monitoringServiceIntent: Intent by lazy {
+        Intent(reactApplicationContext, MonitoringService::class.java)
+    }
+    
+    init {
+        // MainApplication에 ReactApplicationContext 저장
+        MainApplication.reactApplicationContext = reactContext
+    }
 
     override fun getName(): String {
         return "UsageStatsModule"
@@ -107,12 +116,12 @@ class UsageStatsModule(reactContext: ReactApplicationContext) : ReactContextBase
     }
 
     /**
-     * 앱 사용량 모니터링 시작 (주기적으로 이벤트 전송)
+     * 앱 사용량 모니터링 시작 (Foreground Service로 실행)
      */
     @ReactMethod
     fun startMonitoring(intervalMs: Int) {
         try {
-            // 기존 모니터링 스레드가 있으면 중지
+            // 기존 모니터링 중지
             stopMonitoring()
             
             if (!isUsageStatsPermissionGrantedSync()) {
@@ -120,51 +129,21 @@ class UsageStatsModule(reactContext: ReactApplicationContext) : ReactContextBase
                 return
             }
 
-            // 모니터링 로직은 별도 스레드에서 실행
-            val thread = Thread {
-                var lastPackageName: String? = null
-                while (!Thread.currentThread().isInterrupted) {
-                    try {
-                        val currentTime = System.currentTimeMillis()
-                        val stats = usageStatsManager?.queryUsageStats(
-                            UsageStatsManager.INTERVAL_BEST,
-                            currentTime - TimeUnit.SECONDS.toMillis(5),
-                            currentTime
-                        )
-
-                        if (!stats.isNullOrEmpty()) {
-                            var mostRecentUsedApp: UsageStats? = null
-                            for (usageStats in stats) {
-                                if (mostRecentUsedApp == null || 
-                                    usageStats.lastTimeUsed > mostRecentUsedApp.lastTimeUsed) {
-                                    mostRecentUsedApp = usageStats
-                                }
-                            }
-
-                            val currentPackageName = mostRecentUsedApp?.packageName
-                            if (currentPackageName != null && currentPackageName != lastPackageName) {
-                                lastPackageName = currentPackageName
-                                val params = Arguments.createMap()
-                                params.putString("packageName", currentPackageName)
-                                sendEvent("APP_CHANGED", params)
-                            }
-                        }
-
-                        Thread.sleep(intervalMs.toLong())
-                    } catch (e: InterruptedException) {
-                        Thread.currentThread().interrupt()
-                        break
-                    } catch (e: Exception) {
-                        sendEvent("ERROR", createErrorMap("모니터링 중 오류: ${e.message}"))
-                        break
-                    }
+            // Foreground Service로 모니터링 시작 (백그라운드에서도 계속 실행)
+            try {
+                monitoringServiceIntent.putExtra("intervalMs", intervalMs.toLong())
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    reactApplicationContext.startForegroundService(monitoringServiceIntent)
+                } else {
+                    reactApplicationContext.startService(monitoringServiceIntent)
                 }
-                monitoringThread = null
+                android.util.Log.d("UsageStatsModule", "모니터링 서비스 시작: intervalMs=$intervalMs")
+            } catch (e: Exception) {
+                android.util.Log.e("UsageStatsModule", "모니터링 서비스 시작 실패: ${e.message}", e)
+                sendEvent("ERROR", createErrorMap("모니터링 서비스 시작 실패: ${e.message}"))
             }
-            
-            monitoringThread = thread
-            thread.start()
         } catch (e: Exception) {
+            android.util.Log.e("UsageStatsModule", "모니터링 시작 실패: ${e.message}", e)
             sendEvent("ERROR", createErrorMap("모니터링 시작 실패: ${e.message}"))
         }
     }
@@ -174,11 +153,20 @@ class UsageStatsModule(reactContext: ReactApplicationContext) : ReactContextBase
      */
     @ReactMethod
     fun stopMonitoring() {
-        monitoringThread?.let { thread ->
-            if (thread.isAlive) {
-                thread.interrupt()
+        try {
+            // 기존 스레드 모니터링 중지
+            monitoringThread?.let { thread ->
+                if (thread.isAlive) {
+                    thread.interrupt()
+                }
+                monitoringThread = null
             }
-            monitoringThread = null
+            
+            // Foreground Service 중지
+            reactApplicationContext.stopService(monitoringServiceIntent)
+            android.util.Log.d("UsageStatsModule", "모니터링 서비스 중지")
+        } catch (e: Exception) {
+            android.util.Log.e("UsageStatsModule", "모니터링 중지 실패: ${e.message}", e)
         }
     }
 

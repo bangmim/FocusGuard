@@ -8,6 +8,7 @@ import {
   Alert,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../navigation/types';
 import { usageStatsModule } from '../native/UsageStatsModule';
 import { overlayModule } from '../native/OverlayModule';
@@ -22,6 +23,7 @@ interface PermissionScreenProps {
 }
 
 const PermissionScreen: React.FC<PermissionScreenProps> = ({ navigation }) => {
+  const insets = useSafeAreaInsets();
   const [usageStatsGranted, setUsageStatsGranted] = useState(false);
   const [overlayGranted, setOverlayGranted] = useState(false);
   const usageStatsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
@@ -131,7 +133,7 @@ const PermissionScreen: React.FC<PermissionScreenProps> = ({ navigation }) => {
     );
   };
 
-  const handleTestOverlay = () => {
+  const handleTestOverlay = async () => {
     if (!overlayGranted) {
       Alert.alert(
         '권한 필요',
@@ -139,18 +141,36 @@ const PermissionScreen: React.FC<PermissionScreenProps> = ({ navigation }) => {
       );
       return;
     }
-    overlayModule.startOverlayService();
-    Alert.alert(
-      '알림',
-      '오버레이 서비스가 시작되었습니다. 5초 후 자동으로 종료됩니다.',
-    );
-    setTimeout(() => {
-      overlayModule.stopOverlayService();
-    }, 5000);
+
+    try {
+      console.log('[PermissionScreen] 오버레이 테스트 시작');
+      await overlayModule.startOverlayService();
+      console.log('[PermissionScreen] 오버레이 서비스 시작 완료');
+
+      Alert.alert(
+        '알림',
+        '오버레이 서비스가 시작되었습니다. 5초 후 자동으로 종료됩니다.',
+      );
+
+      setTimeout(() => {
+        try {
+          overlayModule.stopOverlayService();
+          console.log('[PermissionScreen] 오버레이 서비스 종료 완료');
+        } catch (error) {
+          console.error('[PermissionScreen] 오버레이 서비스 종료 실패:', error);
+        }
+      }, 5000);
+    } catch (error) {
+      console.error('[PermissionScreen] 오버레이 테스트 실패:', error);
+      Alert.alert('오류', '오버레이 서비스를 시작하는 중 오류가 발생했습니다.');
+    }
   };
 
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={{ paddingBottom: insets.bottom }}
+    >
       <View style={styles.header}>
         <Text style={styles.title}>FocusGuard 권한 설정</Text>
         <Text style={styles.subtitle}>

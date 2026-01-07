@@ -6,6 +6,7 @@ import com.facebook.react.ReactApplication
 import com.facebook.react.ReactHost
 import com.facebook.react.ReactNativeApplicationEntryPoint.loadReactNative
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
+import com.facebook.react.bridge.ReactApplicationContext
 
 class MainApplication : Application(), ReactApplication {
 
@@ -19,6 +20,11 @@ class MainApplication : Application(), ReactApplication {
           add(FocusGuardPackage())
         },
     )
+  }
+
+  companion object {
+    @Volatile
+    var reactApplicationContext: ReactApplicationContext? = null
   }
 
   override fun onCreate() {
