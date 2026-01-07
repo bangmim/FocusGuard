@@ -10,6 +10,8 @@ import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
 import android.content.pm.PackageManager
+import android.content.Context
+import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.Typeface
 import android.view.Gravity
@@ -29,14 +31,37 @@ class OverlayService : Service() {
     private val CHANNEL_ID = "FocusGuardOverlayChannel"
     private val NOTIFICATION_ID = 1
     private var isServiceStopping = false
+    private var lastCheckedApp: String? = null // 마지막으로 체크한 앱 (캐싱)
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
-    private val recheckRunnable = object : Runnable {
+    
+    // 통합된 포그라운드 체크 Runnable (중복 제거)
+    private val foregroundCheckRunnable = object : Runnable {
         override fun run() {
-            if (!isServiceStopping && overlayView == null && canDrawOverlays(this@OverlayService)) {
-                android.util.Log.d("OverlayService", "오버레이가 사라짐, 재표시")
-                showOverlay()
-                handler.postDelayed(this, 2000)
+            if (isServiceStopping) {
+                return
             }
+            
+            val currentApp = getCurrentForegroundApp()
+            
+            // FocusGuard가 포그라운드면 즉시 종료
+            if (currentApp == packageName) {
+                android.util.Log.d("OverlayService", "FocusGuard 포그라운드 감지, 오버레이 종료")
+                isServiceStopping = true
+                hideOverlay()
+                stopSelf()
+                return
+            }
+            
+            // 앱이 변경되었거나, 오버레이가 사라졌다면 재표시 (단, FocusGuard가 아닌 경우에만)
+            if (currentApp != null && currentApp != lastCheckedApp) {
+                lastCheckedApp = currentApp
+                if (overlayView == null && canDrawOverlays(this@OverlayService)) {
+                    android.util.Log.d("OverlayService", "오버레이가 사라짐, 재표시 시도")
+                    showOverlay()
+                }
+            }
+            
+            handler.postDelayed(this, 500) // 0.5초마다 체크 (빠른 감지)
         }
     }
 
@@ -48,6 +73,17 @@ class OverlayService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
+            // FocusGuard 앱이 포그라운드에 있으면 오버레이를 시작하지 않음 (최우선 체크)
+            val currentForegroundApp = getCurrentForegroundApp()
+            android.util.Log.d("OverlayService", "onStartCommand 호출, 현재 포그라운드 앱: $currentForegroundApp")
+            
+            if (currentForegroundApp == packageName) {
+                android.util.Log.d("OverlayService", "FocusGuard 앱이 포그라운드에 있음, 오버레이 시작 안 함 및 서비스 종료")
+                hideOverlay()
+                stopSelf()
+                return START_NOT_STICKY // 재시작하지 않음
+            }
+            
             // 알림 채널이 생성되었는지 확인
             createNotificationChannel()
             
@@ -64,13 +100,23 @@ class OverlayService : Service() {
                 android.util.Log.e("OverlayService", "Foreground 서비스 시작 실패: ${e.message}", e)
             }
             
+            // 오버레이 시작 전에 한 번 더 확인
+            val finalCheck = getCurrentForegroundApp()
+            if (finalCheck == packageName) {
+                android.util.Log.d("OverlayService", "오버레이 시작 직전 FocusGuard 확인, 시작 취소 및 서비스 종료")
+                hideOverlay()
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            
             // 오버레이 권한 확인 후 표시
             if (canDrawOverlays(this)) {
                 isServiceStopping = false
+                lastCheckedApp = null // 초기화
                 showOverlay()
                 
-                // 주기적으로 오버레이가 표시되어 있는지 확인하고 재표시 (서비스가 종료되지 않은 경우에만)
-                handler.postDelayed(recheckRunnable, 2000)
+                // 주기적으로 포그라운드 앱 체크 (FocusGuard 감지용) - 즉시 시작
+                handler.post(foregroundCheckRunnable)
             } else {
                 android.util.Log.w("OverlayService", "오버레이 권한이 없습니다")
                 // 권한이 없어도 서비스는 계속 실행 (알림만 표시)
@@ -81,7 +127,46 @@ class OverlayService : Service() {
             android.util.Log.e("OverlayService", "서비스 시작 실패: ${e.message}", e)
             // 에러가 발생해도 서비스는 계속 실행
         }
-        return START_STICKY
+        return START_NOT_STICKY // FocusGuard로 돌아왔을 때 재시작하지 않도록
+    }
+    
+    private fun getCurrentForegroundApp(): String? {
+        // 현재 포그라운드 앱 확인 (최적화: 시간 범위 조정)
+        try {
+            val usageStatsManager = getSystemService(android.content.Context.USAGE_STATS_SERVICE) as? android.app.usage.UsageStatsManager
+            val time = System.currentTimeMillis()
+            val stats = usageStatsManager?.queryUsageStats(
+                android.app.usage.UsageStatsManager.INTERVAL_BEST,
+                time - 1000, // 1초 전부터 (너무 짧으면 정확도 떨어짐)
+                time
+            )
+            
+            if (stats != null && stats.isNotEmpty()) {
+                var mostRecentUsedApp: android.app.usage.UsageStats? = null
+                var latestTime: Long = 0
+                
+                for (usageStats in stats) {
+                    val appTime = maxOf(
+                        usageStats.lastTimeUsed,
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                            usageStats.lastTimeVisible
+                        } else {
+                            usageStats.lastTimeUsed
+                        }
+                    )
+                    
+                    if (appTime > latestTime) {
+                        latestTime = appTime
+                        mostRecentUsedApp = usageStats
+                    }
+                }
+                
+                return mostRecentUsedApp?.packageName
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("OverlayService", "포그라운드 앱 확인 실패: ${e.message}", e)
+        }
+        return null
     }
 
     private fun createNotificationChannel() {
@@ -119,6 +204,15 @@ class OverlayService : Service() {
     }
 
     private fun showOverlay() {
+        // FocusGuard가 포그라운드면 오버레이 표시하지 않음
+        val currentApp = getCurrentForegroundApp()
+        if (currentApp == packageName) {
+            android.util.Log.d("OverlayService", "showOverlay: FocusGuard 포그라운드, 오버레이 표시 취소")
+            hideOverlay()
+            stopSelf()
+            return
+        }
+        
         // 기존 오버레이가 있으면 제거 후 다시 생성
         hideOverlay()
         
@@ -180,47 +274,54 @@ class OverlayService : Service() {
                 try {
                     android.util.Log.d("OverlayService", "앱으로 돌아가기 버튼 클릭")
                     
+                    // 오버레이 시작 차단 플래그 설정 (3초간) - MonitoringService가 오버레이를 시작하지 않도록
+                    val prefs = getSharedPreferences("focusguard_prefs", Context.MODE_PRIVATE)
+                    prefs.edit().putLong("overlay_blocked_until", System.currentTimeMillis() + 3000).apply()
+                    android.util.Log.d("OverlayService", "오버레이 차단 플래그 설정 (3초간)")
+                    
                     // 서비스 종료 플래그 설정 (재표시 방지)
                     isServiceStopping = true
-                    handler.removeCallbacks(recheckRunnable)
+                    handler.removeCallbacks(foregroundCheckRunnable)
                     
                     // 오버레이 즉시 숨기기
                     hideOverlay()
                     android.util.Log.d("OverlayService", "오버레이 숨김")
                     
-                    // MainActivity를 직접 명시하여 실행
-                    val intent = Intent(applicationContext, com.focusguard.MainActivity::class.java).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                        addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                    }
-                    
-                    android.util.Log.d("OverlayService", "Intent 생성 완료, 실행 시도")
-                    startActivity(intent)
-                    android.util.Log.d("OverlayService", "앱 실행 완료")
-                    
-                    // 서비스 종료 (오버레이가 필요 없으므로)
+                    // 서비스 즉시 종료 (오버레이 재표시 방지)
                     stopSelf()
                     android.util.Log.d("OverlayService", "서비스 종료 요청")
-                } catch (e: Exception) {
-                    android.util.Log.e("OverlayService", "앱 실행 실패: ${e.message}", e)
-                    e.printStackTrace()
                     
-                    // 대체 방법: 패키지명으로 실행 시도
+                    // FocusGuard 앱으로 즉시 이동
                     try {
-                        com.focusguard.MonitoringService.startCooldown()
-                        isServiceStopping = true
-                        handler.removeCallbacks(recheckRunnable)
-                        hideOverlay()
-                        val packageManager = packageManager
-                        val launchIntent = packageManager.getLaunchIntentForPackage(applicationContext.packageName)
-                        launchIntent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                        startActivity(launchIntent)
-                        android.util.Log.d("OverlayService", "대체 방법으로 앱 실행 성공")
-                        stopSelf()
-                    } catch (e2: Exception) {
-                        android.util.Log.e("OverlayService", "대체 방법도 실패: ${e2.message}", e2)
+                        // MainActivity를 직접 명시하여 실행
+                        val intent = Intent(applicationContext, com.focusguard.MainActivity::class.java).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                        }
+                        
+                        android.util.Log.d("OverlayService", "Intent 생성 완료, 실행 시도")
+                        startActivity(intent)
+                        android.util.Log.d("OverlayService", "앱 실행 완료")
+                    } catch (e: Exception) {
+                        android.util.Log.e("OverlayService", "앱 실행 실패: ${e.message}", e)
+                        e.printStackTrace()
+                        
+                        // 대체 방법: 패키지명으로 실행 시도
+                        try {
+                            val packageManager = packageManager
+                            val launchIntent = packageManager.getLaunchIntentForPackage(applicationContext.packageName)
+                            launchIntent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                            startActivity(launchIntent)
+                            android.util.Log.d("OverlayService", "대체 방법으로 앱 실행 성공")
+                        } catch (e2: Exception) {
+                            android.util.Log.e("OverlayService", "대체 방법도 실패: ${e2.message}", e2)
+                        }
                     }
+                    
+                } catch (e: Exception) {
+                    android.util.Log.e("OverlayService", "버튼 클릭 처리 실패: ${e.message}", e)
+                    e.printStackTrace()
                 }
             }
         }
@@ -277,8 +378,9 @@ class OverlayService : Service() {
         super.onDestroy()
         android.util.Log.d("OverlayService", "onDestroy 호출")
         isServiceStopping = true
-        handler.removeCallbacks(recheckRunnable)
+        handler.removeCallbacks(foregroundCheckRunnable)
         hideOverlay()
+        lastCheckedApp = null
         android.util.Log.d("OverlayService", "오버레이 제거 완료")
     }
 

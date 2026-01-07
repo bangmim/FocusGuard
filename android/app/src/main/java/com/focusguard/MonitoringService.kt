@@ -13,13 +13,15 @@ import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.util.concurrent.TimeUnit
 import android.content.SharedPreferences
+import android.app.ActivityManager
 
 class MonitoringService : Service() {
     
     private var usageStatsManager: UsageStatsManager? = null
     private var monitoringThread: Thread? = null
     private var isMonitoring = false
-    private var intervalMs = 500L
+    private var intervalMs = 300L // 더 빠른 감지를 위해 300ms로 단축
+    private var lastCheckedPackageName: String? = null // 마지막으로 체크한 앱
     
     private val CHANNEL_ID = "FocusGuardMonitoringChannel"
     private val NOTIFICATION_ID = 2
@@ -140,14 +142,8 @@ class MonitoringService : Service() {
     
     override fun onCreate() {
         super.onCreate()
-        instance = this
         usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
         createNotificationChannel()
-    }
-    
-    override fun onDestroy() {
-        super.onDestroy()
-        instance = null
     }
     
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -237,105 +233,104 @@ class MonitoringService : Service() {
             android.util.Log.d("MonitoringService", "모니터링 스레드 시작")
             while (isMonitoring && !Thread.currentThread().isInterrupted) {
                 try {
-                    val currentTime = System.currentTimeMillis()
-                    val stats = usageStatsManager?.queryUsageStats(
-                        UsageStatsManager.INTERVAL_BEST,
-                        currentTime - TimeUnit.SECONDS.toMillis(2),
-                        currentTime
-                    )
+                    // 현재 포그라운드 앱 패키지 이름만 확인 (감지 시간 없이)
+                    val currentPackageName = getCurrentForegroundApp()
                     
-                    android.util.Log.v("MonitoringService", "통계 조회: ${stats?.size ?: 0}개 앱")
+                    android.util.Log.v("MonitoringService", "현재 포그라운드 앱: $currentPackageName")
                     
-                    if (!stats.isNullOrEmpty()) {
-                        var mostRecentUsedApp: UsageStats? = null
-                        var latestTime: Long = 0
-                        
-                        for (usageStats in stats) {
-                            val appTime = maxOf(
-                                usageStats.lastTimeUsed,
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                    usageStats.lastTimeVisible
-                                } else {
-                                    usageStats.lastTimeUsed
-                                }
-                            )
-                            
-                            if (appTime > latestTime) {
-                                latestTime = appTime
-                                mostRecentUsedApp = usageStats
-                            }
+                    // FocusGuard 앱이면 오버레이 서비스 종료하고 체크하지 않음 (우선 체크)
+                    if (currentPackageName == applicationContext.packageName) {
+                        // 항상 오버레이 서비스를 종료 (재시작 방지)
+                        android.util.Log.d("MonitoringService", "FocusGuard 앱 감지, 오버레이 서비스 즉시 종료")
+                        try {
+                            val overlayStopIntent = Intent(applicationContext, OverlayService::class.java)
+                            applicationContext.stopService(overlayStopIntent)
+                            android.util.Log.d("MonitoringService", "오버레이 서비스 종료 완료")
+                        } catch (e: Exception) {
+                            android.util.Log.e("MonitoringService", "오버레이 서비스 종료 실패: ${e.message}", e)
                         }
-                        
-                        val currentPackageName = mostRecentUsedApp?.packageName
-                        if (currentPackageName != null && currentPackageName != lastPackageName) {
+                        lastPackageName = currentPackageName // 업데이트하여 다음 루프에서도 스킵
+                        Thread.sleep(intervalMs)
+                        continue // 다음 루프로
+                    }
+                    
+                    // FocusGuard가 아닌 경우 항상 금지 앱 체크 (백그라운드에서 포그라운드로 돌아왔을 때도 체크)
+                    if (currentPackageName != null) {
+                        // 앱이 변경되었을 때만 이벤트 전송
+                        if (currentPackageName != lastPackageName) {
                             lastPackageName = currentPackageName
                             
-                            // FocusGuard 앱으로 돌아왔을 때 오버레이 서비스 종료
-                            if (currentPackageName == applicationContext.packageName) {
-                                android.util.Log.d("MonitoringService", "FocusGuard 앱으로 돌아옴, 오버레이 서비스 종료")
+                            // 이벤트 전송 (React Native에서도 처리)
+                            val params = Arguments.createMap()
+                            params.putString("packageName", currentPackageName)
+                            android.util.Log.d("MonitoringService", "이벤트 전송 시도: APP_CHANGED")
+                            sendEvent("APP_CHANGED", params)
+                            android.util.Log.d("MonitoringService", "이벤트 전송 완료")
+                        }
+                        
+                        // 금지 앱 목록 확인 (매번 체크)
+                        val blockedApps = getBlockedApps()
+                        val isBlocked = blockedApps.contains(currentPackageName)
+                        
+                        android.util.Log.d("MonitoringService", "현재 앱: $currentPackageName, 금지 여부: $isBlocked")
+                        
+                        // 금지 앱이면 오버레이 시작 (오버레이가 없을 때만)
+                        if (isBlocked) {
+                            // 오버레이 차단 플래그 확인 (앱으로 돌아가기 버튼 클릭 후 일시적 차단)
+                            val prefs = getSharedPreferences("focusguard_prefs", Context.MODE_PRIVATE)
+                            val overlayBlockedUntil = prefs.getLong("overlay_blocked_until", 0)
+                            val isOverlayBlocked = System.currentTimeMillis() < overlayBlockedUntil
+                            
+                            if (isOverlayBlocked) {
+                                android.util.Log.d("MonitoringService", "오버레이 차단 중 (앱으로 돌아가기 후 일시적 차단)")
+                                Thread.sleep(intervalMs)
+                                continue
+                            }
+                            
+                            // 오버레이 서비스가 실행 중인지 확인
+                            val isOverlayRunning = isServiceRunning(OverlayService::class.java)
+                            
+                            if (!isOverlayRunning) {
+                                android.util.Log.w("MonitoringService", "⚠️ 금지 앱 감지! 오버레이 시작: $currentPackageName")
+                                android.util.Log.d("MonitoringService", "전체 금지 목록: $blockedApps")
+                                try {
+                                    // 오버레이 권한 확인
+                                    val canDrawOverlays = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                        android.provider.Settings.canDrawOverlays(applicationContext)
+                                    } else {
+                                        true
+                                    }
+                                    
+                                    android.util.Log.d("MonitoringService", "오버레이 권한: $canDrawOverlays")
+                                    
+                                    if (canDrawOverlays) {
+                                        val overlayIntent = Intent(applicationContext, OverlayService::class.java)
+                                        overlayIntent.putExtra("blockedPackageName", currentPackageName)
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                            applicationContext.startForegroundService(overlayIntent)
+                                        } else {
+                                            applicationContext.startService(overlayIntent)
+                                        }
+                                        android.util.Log.d("MonitoringService", "✅ 오버레이 서비스 시작 완료")
+                                    } else {
+                                        android.util.Log.w("MonitoringService", "❌ 오버레이 권한이 없습니다")
+                                    }
+                                } catch (e: Exception) {
+                                    android.util.Log.e("MonitoringService", "❌ 오버레이 시작 실패: ${e.message}", e)
+                                    e.printStackTrace()
+                                }
+                            } else {
+                                android.util.Log.d("MonitoringService", "오버레이 서비스가 이미 실행 중입니다")
+                            }
+                        } else {
+                            // 허용된 앱이면 오버레이 서비스 종료
+                            if (currentPackageName != lastPackageName) {
                                 try {
                                     val overlayStopIntent = Intent(applicationContext, OverlayService::class.java)
                                     applicationContext.stopService(overlayStopIntent)
-                                    android.util.Log.d("MonitoringService", "오버레이 서비스 종료 완료")
+                                    android.util.Log.d("MonitoringService", "허용된 앱으로 변경, 오버레이 서비스 종료")
                                 } catch (e: Exception) {
                                     android.util.Log.e("MonitoringService", "오버레이 서비스 종료 실패: ${e.message}", e)
-                                }
-                            } else {
-                                // 금지 앱 목록 확인
-                                val blockedApps = getBlockedApps()
-                                val isBlocked = blockedApps.contains(currentPackageName)
-                                
-                                android.util.Log.d("MonitoringService", "앱 변경 감지: $currentPackageName")
-                                android.util.Log.d("MonitoringService", "금지 여부: $isBlocked, 금지 목록 크기: ${blockedApps.size}")
-                                
-                                // 이벤트 전송 (React Native에서도 처리)
-                                val params = Arguments.createMap()
-                                params.putString("packageName", currentPackageName)
-                                android.util.Log.d("MonitoringService", "이벤트 전송 시도: APP_CHANGED")
-                                sendEvent("APP_CHANGED", params)
-                                android.util.Log.d("MonitoringService", "이벤트 전송 완료")
-                                
-                                // 금지 앱이면 오버레이 시작 전에 현재 포그라운드 앱을 다시 확인
-                                if (isBlocked) {
-                                    // 현재 실제 포그라운드 앱 확인
-                                    val currentForegroundApp = getCurrentForegroundApp()
-                                    android.util.Log.d("MonitoringService", "현재 포그라운드 앱: $currentForegroundApp")
-                                    
-                                    // FocusGuard 앱이 포그라운드에 있으면 오버레이 시작하지 않음
-                                    if (currentForegroundApp == applicationContext.packageName) {
-                                        android.util.Log.d("MonitoringService", "⏸️ 금지 앱 감지했지만 FocusGuard가 포그라운드에 있음")
-                                    } else {
-                                        android.util.Log.w("MonitoringService", "⚠️ 금지 앱 감지! 오버레이 시작: $currentPackageName")
-                                        android.util.Log.d("MonitoringService", "전체 금지 목록: $blockedApps")
-                                        try {
-                                            // 오버레이 권한 확인
-                                            val canDrawOverlays = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                                android.provider.Settings.canDrawOverlays(applicationContext)
-                                            } else {
-                                                true
-                                            }
-                                            
-                                            android.util.Log.d("MonitoringService", "오버레이 권한: $canDrawOverlays")
-                                            
-                                            if (canDrawOverlays) {
-                                                val overlayIntent = Intent(applicationContext, OverlayService::class.java)
-                                                overlayIntent.putExtra("blockedPackageName", currentPackageName)
-                                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                                    applicationContext.startForegroundService(overlayIntent)
-                                                } else {
-                                                    applicationContext.startService(overlayIntent)
-                                                }
-                                                android.util.Log.d("MonitoringService", "✅ 오버레이 서비스 시작 완료")
-                                            } else {
-                                                android.util.Log.w("MonitoringService", "❌ 오버레이 권한이 없습니다")
-                                            }
-                                        } catch (e: Exception) {
-                                            android.util.Log.e("MonitoringService", "❌ 오버레이 시작 실패: ${e.message}", e)
-                                            e.printStackTrace()
-                                        }
-                                    }
-                                } else {
-                                    android.util.Log.d("MonitoringService", "✅ 허용된 앱: $currentPackageName")
                                 }
                             }
                         }
@@ -360,6 +355,19 @@ class MonitoringService : Service() {
         isMonitoring = false
         monitoringThread?.interrupt()
         monitoringThread = null
+    }
+    
+    // 서비스가 실행 중인지 확인하는 헬퍼 메서드
+    private fun isServiceRunning(serviceClass: Class<*>): Boolean {
+        val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val runningServices = activityManager.getRunningServices(Integer.MAX_VALUE)
+        
+        for (service in runningServices) {
+            if (serviceClass.name == service.service.className) {
+                return true
+            }
+        }
+        return false
     }
     
     private fun sendEvent(eventName: String, params: WritableMap?) {
